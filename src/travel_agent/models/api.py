@@ -99,6 +99,16 @@ class ThreadState(BaseModel):
     last_updated: str
 
 
+class FollowUpChats(BaseModel):
+    """Structured output for follow-up chats from LLM."""
+
+    chats: list[str] = Field(
+        description="List of 3 brief follow-up chats the user might want to ask next",
+        min_length=1,
+        max_length=3,
+    )
+
+
 class HealthResponse(BaseModel):
     """Health check response."""
 

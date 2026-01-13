@@ -1,14 +1,20 @@
 """FastAPI application."""
 
+from pathlib import Path
+
 import structlog
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 
 from travel_agent import __version__
 from travel_agent.api.routes import chat, health
 from travel_agent.config import get_settings
 from travel_agent.models.api import ErrorResponse
+
+# Path to the demo directory (relative to project root)
+DEMO_DIR = Path(__file__).parent.parent.parent.parent / "demo"
 
 # Configure structured logging
 structlog.configure(
@@ -73,6 +79,16 @@ def create_app() -> FastAPI:
     # Include routers
     app.include_router(health.router)
     app.include_router(chat.router)
+
+    # Serve demo page
+    @app.get("/demo", include_in_schema=False)
+    async def serve_demo():
+        """Serve the demo chat interface."""
+        return FileResponse(DEMO_DIR / "index.html")
+
+    # Mount static files for demo assets (if any additional files are added)
+    if DEMO_DIR.exists():
+        app.mount("/demo/static", StaticFiles(directory=DEMO_DIR), name="demo-static")
 
     # Startup event
     @app.on_event("startup")

@@ -10,12 +10,14 @@ from fastapi import APIRouter, HTTPException
 from langchain_core.messages import AIMessage, HumanMessage
 from sse_starlette.sse import EventSourceResponse
 
-from travel_agent.agent.graph import create_travel_agent
+from travel_agent.agent.graph import create_llm, create_travel_agent
+from travel_agent.config import get_settings
 from travel_agent.models.api import (
     ChatRequest,
     ChatResponse,
     ConfirmationDecision,
     ConfirmationResponse,
+    FollowUpChats,
     ThreadState,
     ToolCall,
 )
@@ -25,6 +27,60 @@ router = APIRouter(prefix="/chat", tags=["chat"])
 
 # Store for active agents (in production, use Redis or similar)
 _agents: dict = {}
+
+# Prompt for generating follow-up suggestions
+SUGGESTIONS_PROMPT = """Based on this travel assistant conversation, generate exactly 3 brief \
+follow-up chats the user might want to ask next.
+
+The chats should be:
+- Relevant to the conversation context
+- Actionable and specific
+- Short (under 10 words each)
+
+User asked: {user_message}
+
+Assistant responded: {assistant_response}"""
+
+
+async def generate_suggestions(user_message: str, assistant_response: str) -> list[str]:
+    """Generate follow-up suggestions using the LLM with structured output.
+
+    Args:
+        user_message: The user's original message
+        assistant_response: The assistant's response
+
+    Returns:
+        List of 3 suggested follow-up questions
+    """
+    try:
+        settings = get_settings()
+        llm = create_llm(settings)
+
+        # Use structured output - LLM returns validated Pydantic object
+        structured_llm = llm.with_structured_output(FollowUpChats)
+
+        prompt = SUGGESTIONS_PROMPT.format(
+            user_message=user_message[:200],  # Truncate for efficiency
+            assistant_response=assistant_response[:500],
+        )
+
+        result = await asyncio.to_thread(
+            structured_llm.invoke,
+            [HumanMessage(content=prompt)]
+        )
+
+        # Result is already a FollowUpSuggestions object - no parsing needed
+        return result.chats[:3]
+
+    except Exception as e:
+        logger.warning("suggestions_generation_failed", error=str(e))
+
+    # Fallback suggestions
+    return [
+        "Tell me more about the options",
+        "What are the prices?",
+        "Can you help me book this?"
+    ]
 
 
 def get_or_create_agent(thread_id: str):
@@ -109,6 +165,9 @@ async def chat_stream(request: ChatRequest) -> EventSourceResponse:
             agent = get_or_create_agent(thread_id)
             config = {"configurable": {"thread_id": thread_id}}
 
+            # Collect full response for suggestions
+            full_response = ""
+
             # Stream events from the agent
             for event in agent.stream(
                 {"messages": [HumanMessage(content=request.message)]},
@@ -120,10 +179,21 @@ async def chat_stream(request: ChatRequest) -> EventSourceResponse:
                     message = event[0]
                     if isinstance(message, AIMessage):
                         if message.content:
+                            full_response += message.content
                             yield {
                                 "event": "token",
                                 "data": json.dumps({"content": message.content}),
                             }
+
+            # Generate follow-up suggestions
+            if full_response:
+                suggestions = await generate_suggestions(
+                    request.message, full_response
+                )
+                yield {
+                    "event": "suggestions",
+                    "data": json.dumps({"suggestions": suggestions}),
+                }
 
             # Send completion event
             yield {

@@ -4,6 +4,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Travel Agent - AI Chatbot Demo</title>
+    <!-- Markdown parser -->
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
     <style>
         * {
             box-sizing: border-box;
@@ -283,6 +285,127 @@
                 align-items: center;
             }
         }
+
+        /* Markdown styles for assistant messages */
+        .message.assistant h1,
+        .message.assistant h2,
+        .message.assistant h3 {
+            margin: 12px 0 8px 0;
+            font-weight: 600;
+        }
+
+        .message.assistant h1 { font-size: 1.3em; }
+        .message.assistant h2 { font-size: 1.15em; }
+        .message.assistant h3 { font-size: 1.05em; }
+
+        .message.assistant p {
+            margin: 8px 0;
+        }
+
+        .message.assistant p:first-child {
+            margin-top: 0;
+        }
+
+        .message.assistant p:last-child {
+            margin-bottom: 0;
+        }
+
+        .message.assistant code {
+            background: rgba(0, 0, 0, 0.06);
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-family: 'SF Mono', Monaco, 'Courier New', monospace;
+            font-size: 0.9em;
+        }
+
+        .message.assistant pre {
+            background: #1e1e1e;
+            color: #d4d4d4;
+            padding: 12px 16px;
+            border-radius: 8px;
+            overflow-x: auto;
+            margin: 12px 0;
+        }
+
+        .message.assistant pre code {
+            background: none;
+            padding: 0;
+            color: inherit;
+        }
+
+        .message.assistant ul,
+        .message.assistant ol {
+            margin: 8px 0 8px 20px;
+        }
+
+        .message.assistant li {
+            margin: 4px 0;
+        }
+
+        .message.assistant a {
+            color: #667eea;
+            text-decoration: none;
+        }
+
+        .message.assistant a:hover {
+            text-decoration: underline;
+        }
+
+        .message.assistant blockquote {
+            border-left: 3px solid #667eea;
+            margin: 12px 0;
+            padding-left: 12px;
+            color: #666;
+        }
+
+        .message.assistant strong {
+            font-weight: 600;
+        }
+
+        .message.assistant table {
+            border-collapse: collapse;
+            margin: 12px 0;
+            width: 100%;
+        }
+
+        .message.assistant th,
+        .message.assistant td {
+            border: 1px solid #e5e7eb;
+            padding: 8px 12px;
+            text-align: left;
+        }
+
+        .message.assistant th {
+            background: #f9fafb;
+            font-weight: 600;
+        }
+
+        /* Follow-up suggestions */
+        .follow-up-suggestions {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+            margin-top: 12px;
+            padding-top: 12px;
+            border-top: 1px solid rgba(0, 0, 0, 0.06);
+        }
+
+        .follow-up-suggestions .suggestion {
+            background: #f3f4f6;
+            border: 1px solid #e5e7eb;
+            padding: 8px 14px;
+            border-radius: 16px;
+            font-size: 12px;
+            cursor: pointer;
+            transition: all 0.2s;
+            color: #374151;
+        }
+
+        .follow-up-suggestions .suggestion:hover {
+            background: #667eea;
+            color: white;
+            border-color: #667eea;
+        }
     </style>
 </head>
 <body>
@@ -327,8 +450,8 @@
     </div>
 
     <script>
-        // Configuration
-        const API_BASE_URL = 'http://localhost:8000';
+        // Configuration - empty string means same origin (served by FastAPI)
+        const API_BASE_URL = '';
 
         // State
         let threadId = localStorage.getItem('threadId');
@@ -380,7 +503,7 @@
         }
 
         // Add message to chat
-        function addMessage(content, type) {
+        function addMessage(content, type, useMarkdown = false) {
             // Remove welcome message if present
             const welcomeEl = document.getElementById('welcome');
             if (welcomeEl) {
@@ -389,10 +512,41 @@
 
             const messageDiv = document.createElement('div');
             messageDiv.className = `message ${type}`;
-            messageDiv.textContent = content;
+
+            if (useMarkdown && type === 'assistant') {
+                messageDiv.innerHTML = marked.parse(content);
+            } else {
+                messageDiv.textContent = content;
+            }
+
             chatContainer.appendChild(messageDiv);
             scrollToBottom();
             return messageDiv;
+        }
+
+        // Render markdown in a message element
+        function renderMarkdown(element, content) {
+            element.innerHTML = marked.parse(content);
+            scrollToBottom();
+        }
+
+        // Add follow-up suggestions to a message
+        function addSuggestions(messageElement, suggestions) {
+            if (!suggestions || suggestions.length === 0) return;
+
+            const suggestionsDiv = document.createElement('div');
+            suggestionsDiv.className = 'follow-up-suggestions';
+
+            suggestions.forEach(suggestion => {
+                const btn = document.createElement('button');
+                btn.className = 'suggestion';
+                btn.textContent = suggestion;
+                btn.onclick = () => sendSuggestion(btn);
+                suggestionsDiv.appendChild(btn);
+            });
+
+            messageElement.appendChild(suggestionsDiv);
+            scrollToBottom();
         }
 
         // Add typing indicator
@@ -465,6 +619,8 @@
                 const reader = response.body.getReader();
                 const decoder = new TextDecoder();
                 let buffer = '';
+                let rawContent = '';  // Track raw text for markdown rendering
+                let currentEvent = 'token';  // Track current event type
 
                 while (true) {
                     const { done, value } = await reader.read();
@@ -478,6 +634,7 @@
 
                     for (const line of lines) {
                         if (line.startsWith('event:')) {
+                            currentEvent = line.slice(6).trim();
                             continue;
                         }
                         if (line.startsWith('data:')) {
@@ -486,16 +643,32 @@
                                 try {
                                     const parsed = JSON.parse(data);
 
+                                    // Handle token event - stream text
                                     if (parsed.content) {
-                                        assistantMessage.textContent += parsed.content;
+                                        rawContent += parsed.content;
+                                        assistantMessage.textContent = rawContent;
                                         scrollToBottom();
                                     }
 
+                                    // Handle suggestions event
+                                    if (parsed.suggestions) {
+                                        // Render markdown now that streaming is complete
+                                        renderMarkdown(assistantMessage, rawContent);
+                                        // Add follow-up suggestions
+                                        addSuggestions(assistantMessage, parsed.suggestions);
+                                    }
+
+                                    // Handle done event
                                     if (parsed.thread_id) {
                                         threadId = parsed.thread_id;
                                         localStorage.setItem('threadId', threadId);
+                                        // Final markdown render if no suggestions were sent
+                                        if (rawContent && assistantMessage.textContent === rawContent) {
+                                            renderMarkdown(assistantMessage, rawContent);
+                                        }
                                     }
 
+                                    // Handle error event
                                     if (parsed.error) {
                                         assistantMessage.className = 'message error';
                                         assistantMessage.textContent = `Error: ${parsed.error}`;
@@ -509,7 +682,7 @@
                 }
 
                 // Handle empty response
-                if (!assistantMessage.textContent) {
+                if (!rawContent) {
                     assistantMessage.textContent = 'I received your message but have no response. Please try again.';
                 }
 
@@ -518,7 +691,7 @@
             } catch (error) {
                 console.error('Error:', error);
                 removeTypingIndicator();
-                addMessage(`Failed to connect to the server. Make sure the API is running at ${API_BASE_URL}`, 'error');
+                addMessage('Failed to connect to the server. Make sure the API is running.', 'error');
                 updateStatus(false);
             } finally {
                 isStreaming = false;
