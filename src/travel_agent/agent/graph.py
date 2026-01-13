@@ -1,6 +1,6 @@
 """LangGraph agent definition for the travel agent."""
 
-from langchain_openai import ChatOpenAI
+from langchain_openai import AzureChatOpenAI, ChatOpenAI
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, MessagesState, StateGraph
 from langgraph.prebuilt import ToolNode, tools_condition
@@ -47,6 +47,30 @@ ALL_TOOLS = [
 ]
 
 
+def create_llm(settings):
+    """Create the appropriate LLM based on provider configuration.
+
+    Args:
+        settings: Application settings with provider configuration.
+
+    Returns:
+        Configured ChatOpenAI or AzureChatOpenAI instance.
+    """
+    if settings.llm_provider == "azure_openai":
+        return AzureChatOpenAI(
+            azure_endpoint=settings.azure_openai_endpoint,
+            azure_deployment=settings.azure_openai_deployment_name,
+            api_key=settings.azure_openai_api_key.get_secret_value(),
+            api_version=settings.azure_openai_api_version,
+            reasoning_effort=settings.reasoning_effort,
+        )
+    return ChatOpenAI(
+        model=settings.model_name,
+        reasoning_effort=settings.reasoning_effort,
+        api_key=settings.openai_api_key.get_secret_value(),
+    )
+
+
 def create_travel_agent(checkpointer=None):
     """Create the travel agent graph.
 
@@ -59,11 +83,7 @@ def create_travel_agent(checkpointer=None):
     """
     # Initialize the LLM with tools
     settings = get_settings()
-    model = ChatOpenAI(
-        model=settings.model_name,
-        temperature=settings.temperature,
-        api_key=settings.openai_api_key.get_secret_value(),
-    )
+    model = create_llm(settings)
     model_with_tools = model.bind_tools(ALL_TOOLS)
 
     # Define the agent node

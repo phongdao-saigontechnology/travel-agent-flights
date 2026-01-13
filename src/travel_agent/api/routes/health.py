@@ -16,13 +16,24 @@ async def health_check() -> HealthResponse:
     Returns configuration status for required services.
     """
     settings = get_settings()
+
+    # Determine OpenAI configuration status based on provider
+    if settings.llm_provider == "azure_openai":
+        openai_configured = bool(
+            settings.azure_openai_api_key
+            and settings.azure_openai_endpoint
+            and settings.azure_openai_deployment_name
+        )
+    else:
+        openai_configured = bool(settings.openai_api_key)
+
     return HealthResponse(
         status="healthy",
         version=__version__,
         amadeus_configured=bool(
             settings.amadeus_client_id and settings.amadeus_client_secret
         ),
-        openai_configured=bool(settings.openai_api_key),
+        openai_configured=openai_configured,
     )
 
 
